@@ -3900,7 +3900,6 @@ DROP PROCEDURE IF EXISTS [Application].Configuration_EnableInMemory;
 GO
 
 CREATE PROCEDURE [Application].Configuration_EnableInMemory
-WITH EXECUTE AS OWNER
 AS
 BEGIN
     SET NOCOUNT ON;
@@ -3922,23 +3921,24 @@ BEGIN
 				IF NOT EXISTS (SELECT 1 FROM sys.filegroups WHERE name = N'WWI_InMemory_Data')
 				BEGIN
 				    SET @SQL = N'
-ALTER DATABASE WideWorldImporters
+ALTER DATABASE CURRENT
 ADD FILEGROUP WWI_InMemory_Data CONTAINS MEMORY_OPTIMIZED_DATA;';
 					EXECUTE (@SQL);
 
 					SET @SQL = N'
-ALTER DATABASE WideWorldImporters
+ALTER DATABASE CURRENT
 ADD FILE (name = N''WWI_InMemory_Data_1'', filename = '''
 		                 + @MemoryOptimizedFilegroupFolder + N''')
 TO FILEGROUP WWI_InMemory_Data;';
 					EXECUTE (@SQL);
 
-					SET @SQL = N'
-ALTER DATABASE WideWorldImporters
-SET MEMORY_OPTIMIZED_ELEVATE_TO_SNAPSHOT = ON;';
-					EXECUTE (@SQL);
 				END;
             END;
+
+            SET @SQL = N'
+ALTER DATABASE CURRENT
+SET MEMORY_OPTIMIZED_ELEVATE_TO_SNAPSHOT = ON;';
+            EXECUTE (@SQL);
 
             IF NOT EXISTS (SELECT 1 FROM sys.tables WHERE name = N'ColdRoomTemperatures' AND is_memory_optimized <> 0)
             BEGIN
@@ -3964,6 +3964,7 @@ CREATE TABLE Warehouse.ColdRoomTemperatures
     Temperature decimal(10, 2) NOT NULL,
     ValidFrom datetime2(7) NOT NULL,
     ValidTo datetime2(7) NOT NULL,
+    INDEX [IX_Warehouse_ColdRoomTemperatures_ColdRoomSensorNumber] NONCLUSTERED (ColdRoomSensorNumber),
     CONSTRAINT PK_Warehouse_ColdRoomTemperatures PRIMARY KEY NONCLUSTERED (ColdRoomTemperatureID)
 ) WITH (MEMORY_OPTIMIZED = ON ,DURABILITY = SCHEMA_AND_DATA);';
                 EXECUTE (@SQL);
@@ -4010,8 +4011,7 @@ EXEC dbo.sp_rename @objname = N''Warehouse.VehicleTemperatures'',
                 SET @SQL = N'
 CREATE TABLE Warehouse.VehicleTemperatures
 (
-	VehicleTemperatureID bigint IDENTITY(1,1) NOT NULL
-        PRIMARY KEY NONCLUSTERED,
+	VehicleTemperatureID bigint IDENTITY(1,1) NOT NULL,
 	VehicleRegistration nvarchar(20) COLLATE Latin1_General_CI_AS NOT NULL,
 	ChillerSensorNumber int NOT NULL,
 	RecordedWhen datetime2(7) NOT NULL,
@@ -4626,19 +4626,38 @@ FOR VALUES (N''20140101'', N''20150101'', N''20160101'', N''20170101'');';
 
         IF NOT EXISTS (SELECT * FROM sys.partition_schemes WHERE name = N'PS_TransactionDateTime')
         BEGIN
-            SET @SQL =  N'
+
+            -- for Azure DB, assign to primary filegroup
+            IF SERVERPROPERTY('EngineEdition') = 5
+                SET @SQL =  N'
+CREATE PARTITION SCHEME PS_TransactionDateTime
+AS PARTITION PF_TransactionDateTime
+ALL TO ([PRIMARY]);';
+            -- for other engine editions, assign to user data filegroup
+            IF SERVERPROPERTY('EngineEdition') != 5
+                SET @SQL =  N'
 CREATE PARTITION SCHEME PS_TransactionDateTime
 AS PARTITION PF_TransactionDateTime
 ALL TO ([USERDATA]);';
+
             EXECUTE (@SQL);
         END;
 
         IF NOT EXISTS (SELECT 1 FROM sys.partition_schemes WHERE name = N'PS_TransactionDate')
         BEGIN
+        -- for Azure DB, assign to primary filegroup
+        IF SERVERPROPERTY('EngineEdition') = 5
             SET @SQL =  N'
 CREATE PARTITION SCHEME PS_TransactionDate
 AS PARTITION PF_TransactionDate
-ALL TO ([USERDATA]]);';
+ALL TO ([PRIMARY]);';
+        -- for other engine editions, assign to user data filegroup
+        IF SERVERPROPERTY('EngineEdition') != 5
+            SET @SQL =  N'
+CREATE PARTITION SCHEME PS_TransactionDate
+AS PARTITION PF_TransactionDate
+ALL TO ([USERDATA]);';
+
             EXECUTE (@SQL);
         END;
 
@@ -4979,10 +4998,7 @@ BEGIN
 
     EXEC [Application].[Configuration_ApplyColumnstoreIndexing];
 
-    IF SERVERPROPERTY(N'IsFullTextInstalled') = 0
-    BEGIN
-        EXEC [Application].[Configuration_ApplyFullTextIndexing];
-    END;
+    EXEC [Application].[Configuration_ApplyFullTextIndexing];
 
     EXEC [Application].[Configuration_EnableInMemory];
 
@@ -6137,15 +6153,12 @@ BEGIN
 END;
 GO
 
-USE tempdb;
-GO
-
 /*
 
 -- initial data population to ship date
 
-EXEC WideWorldImporters.DataLoadSimulation.Configuration_ApplyDataLoadSimulationProcedures;
-EXEC WideWorldImporters.DataLoadSimulation.DailyProcessToCreateHistory
+EXEC DataLoadSimulation.Configuration_ApplyDataLoadSimulationProcedures;
+EXEC DataLoadSimulation.DailyProcessToCreateHistory
     @StartDate = '20130101',
     @EndDate = '20160331',
     @AverageNumberOfCustomerOrdersPerDay = 60,
@@ -6154,11 +6167,11 @@ EXEC WideWorldImporters.DataLoadSimulation.DailyProcessToCreateHistory
     @UpdateCustomFields = 1,
     @IsSilentMode = 1,
     @AreDatesPrinted = 1;
-EXEC WideWorldImporters.DataLoadSimulation.Configuration_RemoveDataLoadSimulationProcedures;
+EXEC DataLoadSimulation.Configuration_RemoveDataLoadSimulationProcedures;
 
 -- roll data up to current date
 
-EXEC WideWorldImporters.DataLoadSimulation.PopulateDataToCurrentDate
+EXEC DataLoadSimulation.PopulateDataToCurrentDate
     @AverageNumberOfCustomerOrdersPerDay = 60,
     @SaturdayPercentageOfNormalWorkDay = 50,
     @SundayPercentageOfNormalWorkDay = 0,
